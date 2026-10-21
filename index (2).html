@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Colmeia Inteligente</title>
+  <link rel="stylesheet" href="./style.css">
+  <link rel="icon" type="image/x-icon" href="./LogoClimaBebedouro.png">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a href="https://www.sesisp.org.br/" target="_blank" rel="noopener">
+      <img src="./LogoClimaBebedouro.png" alt="Logo projeto" width="100" height="100">
+    </a>
+    <div class="city-selector">
+      <h1 style="font-size:28px;">🐝 Colmeia Inteligente</h1>
+    </div>
+    <div class="menu">
+      <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" fill="currentColor" viewBox="0 0 16 16">
+        <path fill-rule="evenodd" d="M2.5 12a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5m0-4a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5m0-4a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5"/>
+      </svg>
+      <ul class="nav-links">
+        <a href="https://id.layers.digital/?context=web" target="_blank"><li>Agenda Digital</li></a>
+        <a href="https://conexaodigital.sesisp.org.br/portal/" target="_blank"><li>Conexão Digital</li></a>
+        <a href="https://www.conectasesi.com.br/login/?redirect=%2Flivros%2Fgrupos" target="_blank"><li>Conecta SESI</li></a>
+        <a href="https://www.sesisp.org.br/" target="_blank"><li>SESI</li></a>
+        <a href="https://www.sp.senai.br/curso/tecnico-em-desenvolvimento-de-sistemas/102655" target="_blank"><li>Curso DEV</li></a>
+      </ul>
+    </div>
+  </header>
+
+  <main class="dashboard">
+
+    <!-- Painel principal -->
+    <div class="clima-row">
+      <div class="weather-card">
+        <div class="big-values">
+          <div class="weather-item">
+            <p>Temperatura interna</p>
+            <h1 id="vTempInt">--°</h1>
+          </div>
+          <div class="weather-item">
+            <p>Umidade interna</p>
+            <h1 id="vUmidInt">--%</h1>
+          </div>
+          <div class="weather-item">
+            <p>Temperatura externa</p>
+            <h1 id="vTempExt">--°</h1>
+          </div>
+        </div>
+        <div class="status-row">
+          <span class="chip" id="chipConexao">Conexão: --</span>
+          <span class="chip" id="chipAgua">Água: --</span>
+          <span class="chip" id="chipFan">Ventoinha: --</span>
+          <span class="chip" id="chipHeater">Aquecedor: --</span>
+          <span class="chip" id="chipAlarme">Alarme: --</span>
+        </div>
+        <p id="ultimaLeitura">Aguardando dados…</p>
+      </div>
+    </div>
+
+    <!-- Controle remoto -->
+    <div class="control-card">
+      <h3>Controle da colmeia</h3>
+      <div class="control-grid">
+        <label>Temperatura alvo (°C)
+          <input type="number" id="cfgSetpoint" step="0.1" min="25" max="36" value="34.5">
+        </label>
+        <label>Histerese (°C)
+          <input type="number" id="cfgHist" step="0.1" min="0.3" max="3" value="1.0">
+        </label>
+        <label class="inline">
+          <input type="checkbox" id="cfgAuto" checked> Modo automático
+        </label>
+        <button id="btnSalvar">Salvar</button>
+      </div>
+      <div id="msgConfig"></div>
+    </div>
+
+    <h2 class="titulo-secao">Histórico (últimas leituras)</h2>
+
+    <div class="graficos-row">
+      <div class="chart-card">
+        <h3>Temperatura (°C)</h3>
+        <canvas id="graficoTemp"></canvas>
+      </div>
+      <div class="chart-card">
+        <h3>Umidade interna (%)</h3>
+        <canvas id="graficoUmid"></canvas>
+      </div>
+      <div class="chart-card">
+        <h3>Ventoinha (%) e Aquecedor</h3>
+        <canvas id="graficoAtuadores"></canvas>
+      </div>
+    </div>
+
+    <section class="about-project">
+      <h3>Sobre o Projeto</h3>
+      <p>
+        Caixa de abelhas com controle automático de temperatura e umidade.
+        Um ESP32 lê os sensores, aciona ventoinhas e aquecedor e envia os dados
+        para esta página em tempo real.
+      </p>
+    </section>
+  </main>
+
+  <script>
+    // ---------- Menu ----------
+    const menuIcon = document.querySelector(".menu svg");
+    const navLinks = document.querySelector(".nav-links");
+    menuIcon.addEventListener("click", () => navLinks.classList.toggle("show"));
+
+    // ---------- Supabase ----------
+    const SUPABASE_URL = "https://SEU_PROJETO.supabase.co";
+    const SUPABASE_ANON_KEY = "SUA_ANON_KEY";
+    const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    const INTERVALO_MS = 5000;      // atualiza a cada 5 s
+    const OFFLINE_APOS_S = 60;      // sem dado por 60 s = offline
+    const QTD_PONTOS = 30;
+
+    let chartTemp, chartUmid, chartAtu;
+
+    // ---------- Helpers ----------
+    const fmt = (v, casas = 1) => (v === null || v === undefined) ? "--" : Number(v).toFixed(casas);
+    const hora = iso => new Date(iso).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+    function chip(id, texto, classe) {
+      const el = document.getElementById(id);
+      el.textContent = texto;
+      el.className = "chip " + classe;
+    }
+
+    // ---------- Gráficos ----------
+    function criaGraficos() {
+      chartTemp = new Chart(document.getElementById("graficoTemp"), {
+        type: "line",
+        data: { labels: [], datasets: [
+          { label: "Interna", data: [], borderColor: "#ff5733", tension: .3 },
+          { label: "Externa", data: [], borderColor: "#33c1ff", tension: .3 }
+        ]},
+        options: { animation: false }
+      });
+      chartUmid = new Chart(document.getElementById("graficoUmid"), {
+        type: "line",
+        data: { labels: [], datasets: [
+          { label: "Umidade (%)", data: [], borderColor: "#4a90e2", tension: .3 }
+        ]},
+        options: { animation: false, scales: { y: { min: 0, max: 100 } } }
+      });
+      chartAtu = new Chart(document.getElementById("graficoAtuadores"), {
+        type: "line",
+        data: { labels: [], datasets: [
+          { label: "Ventoinha (%)", data: [], borderColor: "#2ca02c", tension: .3 },
+          { label: "Aquecedor (0/100)", data: [], borderColor: "#d62728", stepped: true }
+        ]},
+        options: { animation: false, scales: { y: { min: 0, max: 100 } } }
+      });
+    }
+
+    function atualizaGraficos(linhas) {   // linhas em ordem cronológica
+      const labels = linhas.map(l => hora(l.created_at));
+      chartTemp.data.labels = labels;
+      chartTemp.data.datasets[0].data = linhas.map(l => l.temp_interna);
+      chartTemp.data.datasets[1].data = linhas.map(l => l.temp_externa);
+      chartTemp.update();
+
+      chartUmid.data.labels = labels;
+      chartUmid.data.datasets[0].data = linhas.map(l => l.umid_interna);
+      chartUmid.update();
+
+      chartAtu.data.labels = labels;
+      chartAtu.data.datasets[0].data = linhas.map(l => l.ventoinha_pct);
+      chartAtu.data.datasets[1].data = linhas.map(l => l.aquecedor ? 100 : 0);
+      chartAtu.update();
+    }
+
+    // ---------- Painel ----------
+    function atualizaPainel(u) {
+      document.getElementById("vTempInt").textContent = fmt(u.temp_interna) + "°";
+      document.getElementById("vUmidInt").textContent = fmt(u.umid_interna, 0) + "%";
+      document.getElementById("vTempExt").textContent = fmt(u.temp_externa) + "°";
+
+      const idadeS = (Date.now() - new Date(u.created_at).getTime()) / 1000;
+      if (idadeS > OFFLINE_APOS_S) chip("chipConexao", "Conexão: OFFLINE", "bad");
+      else chip("chipConexao", "Conexão: online", "ok");
+
+      chip("chipAgua", u.nivel_agua ? "Água: OK" : "Água: VAZIO", u.nivel_agua ? "ok" : "bad");
+      chip("chipFan", `Ventoinha: ${u.ventoinha_pct ?? 0}%`, (u.ventoinha_pct > 0) ? "warn" : "");
+      chip("chipHeater", u.aquecedor ? "Aquecedor: LIGADO" : "Aquecedor: desligado", u.aquecedor ? "warn" : "");
+
+      const alarmeTxt = {
+        OK: "Alarme: nenhum", TEMP_ALTA: "ALARME: temperatura alta!",
+        TEMP_BAIXA: "ALARME: temperatura baixa", SENSOR: "ALARME: falha de sensor",
+        SEM_AGUA: "ALARME: sem água"
+      };
+      chip("chipAlarme", alarmeTxt[u.alarme] || ("Alarme: " + u.alarme), u.alarme === "OK" ? "ok" : "bad");
+
+      document.getElementById("ultimaLeitura").textContent = "Última leitura: " + new Date(u.created_at).toLocaleString("pt-BR");
+    }
+
+    // ---------- Leitura (setTimeout recursivo) ----------
+    async function carregaDados() {
+      try {
+        const { data, error } = await db
+          .from("colmeia")
+          .select("*")
+          .order("id", { ascending: false })
+          .limit(QTD_PONTOS);
+
+        if (error) throw error;
+        if (data && data.length) {
+          atualizaPainel(data[0]);
+          atualizaGraficos([...data].reverse());
+        }
+      } catch (e) {
+        console.error("Erro ao ler dados:", e);
+        chip("chipConexao", "Conexão: erro", "bad");
+      } finally {
+        setTimeout(carregaDados, INTERVALO_MS);   // só agenda a próxima depois que esta terminou
+      }
+    }
+
+    // ---------- Config (setpoint) ----------
+    async function carregaConfig() {
+      const { data } = await db.from("colmeia_config").select("*").eq("id", 1).single();
+      if (data) {
+        document.getElementById("cfgSetpoint").value = data.setpoint;
+        document.getElementById("cfgHist").value = data.histerese;
+        document.getElementById("cfgAuto").checked = data.modo_auto;
+      }
+    }
+
+    document.getElementById("btnSalvar").addEventListener("click", async () => {
+      const msg = document.getElementById("msgConfig");
+      const setpoint = parseFloat(document.getElementById("cfgSetpoint").value);
+      const histerese = parseFloat(document.getElementById("cfgHist").value);
+      const modo_auto = document.getElementById("cfgAuto").checked;
+
+      if (isNaN(setpoint) || setpoint < 25 || setpoint > 36) { msg.textContent = "Temperatura alvo: 25 a 36 °C"; return; }
+      if (isNaN(histerese) || histerese < 0.3 || histerese > 3) { msg.textContent = "Histerese: 0,3 a 3 °C"; return; }
+
+      const { error } = await db.from("colmeia_config").update({ setpoint, histerese, modo_auto }).eq("id", 1);
+      msg.textContent = error ? "Erro ao salvar." : "Salvo! O ESP32 aplica em até 15 s.";
+      msg.style.color = error ? "#9b1c1c" : "#14692e";
+    });
+
+    // ---------- Início ----------
+    criaGraficos();
+    carregaConfig();
+    carregaDados();
+  </script>
+</body>
+</html>
